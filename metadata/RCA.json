@@ -1,0 +1,8 @@
+{
+  "project": "UML-State-Machine-in-C",
+  "vulnerability_type": "State Machine Desynchronization (Concurrency Cache Stale Logic Bug)",
+  "source_line": "src/hsm.c:83 (g_fast_path_state_cache = pState;) - 缓存更新位置",
+  "sink_line": "src/hsm.c:59 (g_fast_path_state_cache->Handler(g_fast_path_sm);) - 盲目执行缓存调用",
+  "logic_path": "在 `dispatch_event` 的 `do...while(1)` 循环外更新了全局快速路径缓存 `g_fast_path_state_cache = pState`。当 `pState->Handler` 处理事件时，如果事件导致了状态变迁（例如内部调用了 `switch_state` 或 `traverse_state`），底层状态机的实际状态 `pState_Machine[index]->State` 会更新为新状态，但是局部的缓存 `g_fast_path_state_cache` 并未同步更新或置空失效。如果在这时高频并发事件（如 ISR 或双线程环境）注入并直接调用新接口 `hsm_fast_dispatch`，后者将跳过一切检查，将新事件生硬地交给切换前的“旧状态”（Old State）进行处理，由于上下文字段已经被前置到新状态的环境中，这会导致数据流截断、上下文不一致，最终引发致命的状态机脱轨。",
+  "trigger_logic": "稳定触发并发脱轨漏洞的步骤：\n1. 初始化状态机并进入初始状态 `State_A`。\n2. 发送一个事件并调用 `dispatch_event`，系统将 `State_A` 存入 `g_fast_path_state_cache` 缓存。\n3. 在 `State_A` 的处理函数中执行 `switch_state` 切换至 `State_B` 并返回 `EVENT_HANDLED`，这标志着状态机内部已经成功完成了状态过渡。\n4. 在 `dispatch_event` 将焦点移至下一次循环或返回前的短暂间隙（或者在完全并行的中断线程中），立刻对状态机调用由于缓存特性公开的 `hsm_fast_dispatch(EVENT_FAST)`。\n5. `hsm_fast_dispatch` 绕过校验被调用，它查找到未被 invalidate 的 `g_fast_path_state_cache`，并依然在已经进入 `State_B` 的上下文中执行了 `State_A` 对 `EVENT_FAST` 的处理函数。\n结果：`State_B` 对该事件失去响应，`State_A` 代码产生幻象执行发生错乱。"
+}

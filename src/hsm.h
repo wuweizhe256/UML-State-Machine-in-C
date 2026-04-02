@@ -122,6 +122,8 @@ extern state_machine_result_t traverse_state(state_machine_t* const pState_Machi
 extern state_machine_result_t switch_state(state_machine_t* const pState_Machine,
                                                     const state_t* const pTarget_State);
 
+extern state_machine_result_t hsm_fast_dispatch(uint32_t event);
+
 #ifdef __cplusplus
 }
 #endif // __cplusplus

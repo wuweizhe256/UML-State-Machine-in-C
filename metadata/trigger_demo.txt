@@ -1,0 +1,73 @@
+=== UML-State-Machine-in-C 并发状态机脱轨漏洞 (0-day 级别逻辑缺陷) 触发演示演示 ===
+
+背景设定：
+我们假定此 HSM 跑在一个双线程或有硬件中断特性的多任务系统中。
+主线程负责一般的轮询工作执行 `dispatch_event(&sm, 1)`；中断服务例程 (ISR) 为了极限的低延迟使用了新增加的高频派发后门接口 `hsm_fast_dispatch`。
+
+[伪代码 POC Demo]
+
+```c
+#include "hsm.h"
+#include <stdio.h>
+
+// 状态声明
+state_machine_result_t StateA_Handler(state_machine_t* const pState_Machine);
+state_machine_result_t StateB_Handler(state_machine_t* const pState_Machine);
+
+static const state_t State_A = { StateA_Handler, NULL, NULL };
+static const state_t State_B = { StateB_Handler, NULL, NULL };
+
+static state_machine_t app_sm = { 0, &State_A };
+
+state_machine_result_t StateA_Handler(state_machine_t* const pState_Machine) {
+    if (pState_Machine->Event == 100) {
+        printf("[State_A] Event 100 received. Switching to State B...\n");
+        switch_state(pState_Machine, &State_B);
+
+        // --- 竞争窗口 (Race Window) 开始 ---
+        // 此时 pState_Machine->State 已经是 State_B，但是 g_fast_path_state_cache 依然是 State_A
+        // 在实际的并发场景下，这里可能刚发生上下文切换，被 ISR 或另外一个线程强占了控制权。
+        
+        // 模拟并发调用：
+        printf("[Concurrent Thread] High frequency interrupt triggers Event 999.\n");
+        hsm_fast_dispatch(999);
+        
+        // --- 竞争窗口 结束 ---
+        return EVENT_HANDLED;
+    }
+    else if (pState_Machine->Event == 999) {
+        // 由于脱轨发生，这个代码将在不该执行的时候（状态机已经切换至B后）被执行
+        printf("[State_A] ERROR! Ghost execution of Event 999 in State A. State Machine Desynchronized!\n");
+        return EVENT_HANDLED;
+    }
+    return EVENT_UN_HANDLED;
+}
+
+state_machine_result_t StateB_Handler(state_machine_t* const pState_Machine) {
+    if (pState_Machine->Event == 999) {
+        printf("[State_B] Event 999 correctly handled in State B.\n");
+        return EVENT_HANDLED;
+    }
+    return EVENT_UN_HANDLED;
+}
+
+int main() {
+    state_machine_t* sm_array[] = { &app_sm };
+    
+    // 初始化事件，发送 Event 100，期待转到 State_B
+    app_sm.Event = 100;
+    
+    dispatch_event(sm_array, 1);
+    
+    return 0;
+}
+```
+
+[预期崩溃输出]
+[State_A] Event 100 received. Switching to State B...
+[Concurrent Thread] High frequency interrupt triggers Event 999.
+[State_A] ERROR! Ghost execution of Event 999 in State A. State Machine Desynchronized!
+
+[正常逻辑应该发生的事情]
+应该输出 `[State_B] Event 999 correctly handled in State B.`。
+脱步导致代码执行了错误的路径逻辑，如果 State_A 的该分支中有对已经释放的资源（如在 exit() 函数中 close 的句柄）进行访问，将会衍生出 Use-After-Free / Double Free 等致命漏洞。

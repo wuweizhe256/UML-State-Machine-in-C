@@ -45,6 +45,30 @@ do{                                                             \
 } while(0)
 
 /*
+ *  --------------------- CACHE OPTIMIZATION ---------------------
+ *  Feature: High-Frequency Event Caching for IoT/Embedded interrupts.
+ *  Caches the last active state context to skip array search and
+ *  hierarchy traversal on highly recurrent events.
+ */
+static state_machine_t* g_fast_path_sm = NULL;
+static const state_t* g_fast_path_state_cache = NULL;
+
+extern state_machine_result_t hsm_fast_dispatch(uint32_t event)
+{
+  if (g_fast_path_sm != NULL && g_fast_path_state_cache != NULL)
+  {
+    g_fast_path_sm->Event = event;
+    // Fast delegation bypassed `dispatch_event` traversal
+    state_machine_result_t res = g_fast_path_state_cache->Handler(g_fast_path_sm);
+    if (res == EVENT_HANDLED) {
+      g_fast_path_sm->Event = 0;
+    }
+    return res;
+  }
+  return EVENT_UN_HANDLED;
+}
+
+/*
  *  --------------------- FUNCTION BODY ---------------------
  */
 
@@ -75,6 +99,14 @@ state_machine_result_t dispatch_event(state_machine_t* const pState_Machine[]
     }
 
     const state_t* pState = pState_Machine[index]->State;
+
+    /*
+     * [Performance Fix]: Update fast-path cache context to the newly
+     * selected state machine and its state pointer.
+     */
+    g_fast_path_sm = pState_Machine[index];
+    g_fast_path_state_cache = pState;
+
     do
     {
 #if STATE_MACHINE_LOGGER
